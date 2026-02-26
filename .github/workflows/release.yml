@@ -1,0 +1,36 @@
+name: Build and Release Linux x86_64
+
+on:
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+jobs:
+  build-linux:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install Rust
+        uses: dtolnay/rust-toolchain@stable
+
+      - name: Build release binaries
+        run: cargo build --release
+
+      - name: Package binaries
+        run: |
+          mkdir -p dist
+          cp target/release/myclaw-server dist/
+          cp target/release/myclaw-client dist/
+          cp -r config dist/
+          cd dist && tar czf ../myclaw-linux-x86_64.tar.gz *
+
+      - name: Create Release
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          gh release create v0.1.0 \
+            --title "MyClaw v0.1.0" \
+            --notes "Initial release - Linux x86_64 binaries" \
+            myclaw-linux-x86_64.tar.gz
