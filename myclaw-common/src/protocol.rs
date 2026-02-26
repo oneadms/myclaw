@@ -66,6 +66,18 @@ pub enum GatewayFrame {
     Error { message: String },
 }
 
+/// Relay ↔ Agent control frames
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(tag = "type")]
+pub enum RelayFrame {
+    /// Agent registers with relay
+    #[serde(rename = "agent_hello")]
+    AgentHello { agent_id: String },
+    /// Relay acknowledges agent
+    #[serde(rename = "agent_welcome")]
+    AgentWelcome { agent_id: String },
+}
+
 impl ClientMessage {
     pub fn new_chat(content: impl Into<String>) -> Self {
         Self::Chat {

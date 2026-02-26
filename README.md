@@ -16,23 +16,27 @@
 
 ## 它是什么
 
-MyClaw 是一个基于 Rust 的分布式聊天系统，由三个 crate 组成：
+MyClaw 是一个基于 Rust 的分布式聊天系统，由五个 crate 组成：
 
 ```
-┌─────────────┐    WebSocket    ┌──────────────┐    WebSocket    ┌─────────────────┐
-│ myclaw-client│ ◄────────────► │ myclaw-server │ ◄────────────► │ OpenClaw Gateway │
-│   (TUI)     │   :9800        │  (路由/桥接)   │   :18789       │   (AI Agent)     │
-└─────────────┘                └──────────────┘                └─────────────────┘
+用户(公网)                        云服务器                              Mac(内网)
+
+myclaw-client ──WS──► myclaw-server ──WS──► myclaw-relay ◄──WS── myclaw-agent ──WS──► OpenClaw Gateway
+   :TUI               :9800                :19000  :19001                              :18789
 ```
 
-- **myclaw-server** — 频道节点服务器，桥接客户端与 OpenClaw Gateway，管理会话路由
+- **myclaw-server** — 频道节点服务器，桥接客户端与 Gateway，管理会话路由
 - **myclaw-client** — 终端 TUI 聊天界面，支持流式响应
+- **myclaw-relay** — 中继层，部署在云服务器，透明转发 server 与 agent 之间的消息
+- **myclaw-agent** — 隧道代理，部署在内网 Mac，主动出站连接 relay 并桥接本地 Gateway
 - **myclaw-common** — 共享协议定义与错误类型
 
 ## 特性
 
 - 全异步架构，基于 tokio
 - WebSocket 双向通信，支持流式消息推送
+- Relay 中继层，支持 NAT 穿透（内网 Gateway 无需公网 IP）
+- Agent 隧道代理，主动出站连接 + 断线自动重连（指数退避）
 - Gateway 断线自动重连（指数退避）
 - 心跳保活机制
 - 基于 ratatui 的终端 UI，彩色消息展示
@@ -49,10 +53,14 @@ MyClaw 是一个基于 Rust 的分布式聊天系统，由三个 crate 组成：
 curl -LO https://github.com/oneadms/myclaw/releases/download/v0.1.0/myclaw-linux-x86_64.tar.gz
 tar xzf myclaw-linux-x86_64.tar.gz
 
-# 启动服务器
+# 启动服务器（云服务器）
+./myclaw-relay -c config/relay.toml
 ./myclaw-server -c config/server.toml
 
-# 另一个终端，启动客户端
+# 启动代理（内网 Mac）
+./myclaw-agent -c config/agent.toml
+
+# 启动客户端
 ./myclaw-client -c config/client.toml
 ```
 
@@ -78,7 +86,7 @@ host = "127.0.0.1"
 port = 9800
 
 [gateway]
-url = "ws://127.0.0.1:18789"
+url = "ws://127.0.0.1:19000"
 node_id = "myclaw-node-01"
 heartbeat_interval_secs = 30
 reconnect_base_ms = 1000
@@ -88,7 +96,7 @@ reconnect_max_ms = 30000
 | 字段 | 说明 |
 |------|------|
 | `server.host` / `port` | 客户端 WebSocket 监听地址 |
-| `gateway.url` | OpenClaw Gateway 地址 |
+| `gateway.url` | Relay 中继地址（原为 Gateway 直连） |
 | `gateway.node_id` | 当前节点标识 |
 | `gateway.heartbeat_interval_secs` | 心跳间隔（秒） |
 | `gateway.reconnect_base_ms` | 重连初始延迟（毫秒） |
@@ -101,6 +109,38 @@ reconnect_max_ms = 30000
 url = "ws://127.0.0.1:9800"
 ```
 
+### 中继 `config/relay.toml`
+
+```toml
+[relay]
+server_listen = "0.0.0.0:19000"
+agent_listen = "0.0.0.0:19001"
+```
+
+| 字段 | 说明 |
+|------|------|
+| `relay.server_listen` | myclaw-server 连接的监听地址 |
+| `relay.agent_listen` | myclaw-agent 连接的监听地址 |
+
+### 代理 `config/agent.toml`
+
+```toml
+[agent]
+relay_url = "ws://YOUR_SERVER_IP:19001"
+gateway_url = "ws://127.0.0.1:18789"
+agent_id = "myclaw-agent-01"
+reconnect_base_ms = 1000
+reconnect_max_ms = 30000
+```
+
+| 字段 | 说明 |
+|------|------|
+| `agent.relay_url` | 云服务器 relay 的 agent 端口地址 |
+| `agent.gateway_url` | 本地 OpenClaw Gateway 地址 |
+| `agent.agent_id` | 代理标识 |
+| `agent.reconnect_base_ms` | 重连初始延迟（毫秒） |
+| `agent.reconnect_max_ms` | 重连最大延迟（毫秒） |
+
 ---
 
 ## 架构
@@ -112,7 +152,9 @@ myclaw/
 ├── Cargo.toml                 # workspace 定义
 ├── config/
 │   ├── server.toml
-│   └── client.toml
+│   ├── client.toml
+│   ├── relay.toml
+│   └── agent.toml
 ├── myclaw-common/             # 共享库
 │   └── src/
 │       ├── lib.rs
@@ -120,17 +162,29 @@ myclaw/
 │       └── error.rs           # 错误类型
 ├── myclaw-server/             # 频道服务器
 │   └── src/
-│       ├── main.rs            # 入口，启动 gateway + server 任务
-│       ├── config.rs          # 配置加载
-│       ├── gateway.rs         # Gateway WS 客户端（重连/心跳）
-│       ├── server.rs          # 客户端 WS 服务器（接入/转发）
-│       └── router.rs          # 消息路由（请求追踪/会话管理）
+│       ├── main.rs
+│       ├── config.rs
+│       ├── gateway.rs
+│       ├── server.rs
+│       └── router.rs
+├── myclaw-relay/              # 中继层
+│   └── src/
+│       ├── main.rs
+│       ├── config.rs
+│       ├── bridge.rs          # 共享状态 + 通道转发
+│       ├── server_side.rs     # 接受 server 连接
+│       └── agent_side.rs      # 接受 agent 连接
+├── myclaw-agent/              # 隧道代理
+│   └── src/
+│       ├── main.rs            # 入口 + 断线重连循环
+│       ├── config.rs
+│       └── tunnel.rs          # 双向桥接 relay ↔ gateway
 └── myclaw-client/             # TUI 客户端
     └── src/
-        ├── main.rs            # 入口，启动 WS + TUI 任务
-        ├── config.rs          # 配置加载
-        ├── ws.rs              # WebSocket 连接
-        └── tui.rs             # 终端界面
+        ├── main.rs
+        ├── config.rs
+        ├── ws.rs
+        └── tui.rs
 ```
 
 ### 消息流
@@ -150,18 +204,22 @@ TUI ──ClientMessage::Chat──► ws.rs ──WebSocket──► server.rs
                                           GatewayFrame::ChatRequest
                                                      │
                                                      ▼
-                                               gateway.rs ──WebSocket──► OpenClaw Gateway
-                                                     │
-                                          GatewayFrame::ChatResponse
-                                                     │
-                                                     ▼
-                                                 router.rs
-                                             dispatch_reply()
-                                                     │
-                                          ServerMessage::ChatReply
-                                                     │
-                                                     ▼
-ws.rs ◄──WebSocket──── server.rs          (流式分块，done=true 结束)
+                                               gateway.rs ──WS──► relay (server_side)
+                                                                       │
+                                                                  透明转发
+                                                                       │
+                                                                       ▼
+                                                                  relay (agent_side) ──WS──► agent (tunnel)
+                                                                                                │
+                                                                                                ▼
+                                                                                         OpenClaw Gateway
+                                                                                                │
+                                                                                    GatewayFrame::ChatResponse
+                                                                                                │
+                                                                                          原路返回
+                                                                                                │
+                                                                                                ▼
+ws.rs ◄──WebSocket──── server.rs ◄── relay ◄── agent          (流式分块，done=true 结束)
   │
   ▼
 TUI 渲染
@@ -176,6 +234,7 @@ TUI 渲染
 | `ClientMessage` | `chat` / `ping` | Client → Server |
 | `ServerMessage` | `chat_reply` / `error` / `pong` / `status` | Server → Client |
 | `GatewayFrame` | `connect` / `connected` / `chat_request` / `chat_response` / `ping` / `pong` / `error` | Server ↔ Gateway |
+| `RelayFrame` | `agent_hello` / `agent_welcome` | Agent ↔ Relay |
 
 ---
 

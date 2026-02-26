@@ -23,6 +23,8 @@ jobs:
           mkdir -p dist
           cp target/release/myclaw-server dist/
           cp target/release/myclaw-client dist/
+          cp target/release/myclaw-relay dist/
+          cp target/release/myclaw-agent dist/
           cp -r config dist/
           cd dist && tar czf ../myclaw-linux-x86_64.tar.gz *
 

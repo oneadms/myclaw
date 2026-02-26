@@ -1,0 +1,6 @@
+[agent]
+relay_url = "ws://YOUR_SERVER_IP:19001"
+gateway_url = "ws://127.0.0.1:18789"
+agent_id = "myclaw-agent-01"
+reconnect_base_ms = 1000
+reconnect_max_ms = 30000

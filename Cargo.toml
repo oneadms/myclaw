@@ -1,5 +1,5 @@
 [workspace]
-members = ["myclaw-common", "myclaw-server", "myclaw-client"]
+members = ["myclaw-common", "myclaw-server", "myclaw-client", "myclaw-relay", "myclaw-agent"]
 resolver = "2"
 
 [workspace.dependencies]
